@@ -36,7 +36,7 @@ module.exports.handler = async event => {
   console.log(JSON.stringify(orders));
 
   //sum price
-  const grandtotal = orders.reduce((acc, curr) => acc + curr.total, 0);
+  const grandtotal = calculateTotal(orders);
 
   //generate report of items and total
   let report = `Daily Orders
@@ -70,3 +70,12 @@ ${now}
 
   return {date, key, emails: event.emails};
 };
+
+function calculateTotal(items) {
+  const total = items.reduce((acc, curr) => acc + curr.total, 0);
+  if(isNaN(total)) throw new Error("Total is NaN");
+  return total;
+}
+
+module.exports.calculateTotal = calculateTotal;
+
