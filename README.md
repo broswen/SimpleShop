@@ -7,3 +7,4 @@ Then it also creates a shipping label and sends an email with shipping informati
 
 
 ![diagram](./SimpleShop.png)
+![diagram](./data.png)
