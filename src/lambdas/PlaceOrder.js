@@ -20,6 +20,7 @@ module.exports.handler = async event => {
         SK: `ORDER#${id.string}`,
         PK1: `ORDER#${date}`,
         SK1: `ORDER#${id.string}`,
+        id: id.string,
         email: event.email,
         total: total
       }

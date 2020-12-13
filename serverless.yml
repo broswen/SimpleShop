@@ -33,6 +33,7 @@ provider:
         - "dynamodb:PutItem"
         - "dynamodb:UpdateItem"
         - "dynamodb:Query"
+        - dynamodb:Scan
       Resource: 
         - !GetAtt DataTable.Arn
         - !Join [ '/', [!GetAtt DataTable.Arn, 'index', '*'] ]
@@ -137,12 +138,24 @@ resources:
             AttributeType: "S"
           - AttributeName: "SK1"
             AttributeType: "S"
+          - AttributeName: "PK2"
+            AttributeType: "S"
+          - AttributeName: "SK2"
+            AttributeType: "S"
         GlobalSecondaryIndexes:
           - IndexName: GSI1
             KeySchema:
               - AttributeName: "PK1"
                 KeyType: "HASH"
               - AttributeName: "SK1"
+                KeyType: "RANGE"
+            Projection:
+              ProjectionType: ALL
+          - IndexName: GSI2
+            KeySchema:
+              - AttributeName: "PK2"
+                KeyType: "HASH"
+              - AttributeName: "SK2"
                 KeyType: "RANGE"
             Projection:
               ProjectionType: ALL
@@ -178,3 +191,164 @@ resources:
               SubjectPart: Your order has shipped!
               TemplateName: ShippedTemplate 
               TextPart: "Your order {{id}} has shipped! The tracking number is {{shippinglabel}}"
+
+    SimpleShopDataRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: SimpleShopDataRole 
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                - appsync.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        Policies:
+        - PolicyName: DDBQuery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - dynamodb:Query
+                  - dynamodb:GetItem
+                  - dynamodb:Scan
+                Resource: 
+                  - !GetAtt DataTable.Arn
+                  - !GetAtt DataTable.Arn
+                  - !Join [ '/', [!GetAtt DataTable.Arn, 'index', '*'] ]
+
+    SimpleShopApiCloudWatchRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: SimpleShopApiCloudWatchRole
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - appsync.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: "*"
+
+    SimpleShopGraphQLApi:
+      Type: AWS::AppSync::GraphQLApi
+      Properties:
+        AuthenticationType: API_KEY
+        Name: SimpleShopApi
+        LogConfig:
+          CloudWatchLogsRoleArn: !GetAtt SimpleShopApiCloudWatchRole.Arn
+          FieldLogLevel: ALL
+      
+    SimpleShopApiKey:
+      Type: AWS::AppSync::ApiKey
+      Properties:
+        ApiId: !GetAtt SimpleShopGraphQLApi.ApiId
+
+    SimpleShopData:
+      Type: AWS::AppSync::DataSource
+      Properties:
+        ApiId: !GetAtt SimpleShopGraphQLApi.ApiId
+        Name: SimpleShopData
+        DynamoDBConfig:
+          AwsRegion: us-east-1
+          TableName: !Ref DataTable
+        ServiceRoleArn: !GetAtt SimpleShopDataRole.Arn
+        Type: AMAZON_DYNAMODB
+
+    SimpleShopSchema:
+      Type: AWS::AppSync::GraphQLSchema
+      Properties:
+        ApiId: !GetAtt SimpleShopGraphQLApi.ApiId
+        Definition: | 
+          schema {
+            query:Query
+          }
+
+          type Query {
+            getOrder(id: String!): Order!
+            getItems(limit: Int, nextToken: String): ItemConnection
+          }
+
+          type ItemConnection {
+            items: [Item]
+            nextToken: String
+          }
+           
+          type Order {
+            id: String!
+            shippinglabel: String
+            total: Float!
+          }
+
+          type Item {
+            id: String!
+            name: String!
+            price: Float!
+            count: Int!
+          }
+
+    GetOrderResolver:
+      Type: AWS::AppSync::Resolver
+      Properties:
+        ApiId: !GetAtt SimpleShopGraphQLApi.ApiId
+        FieldName: getOrder
+        TypeName: Query 
+        DataSourceName: !GetAtt SimpleShopData.Name
+        Kind: UNIT
+        RequestMappingTemplate: |
+          {
+            #set($prefix ="ORDER#")
+            #set($key = "$prefix$ctx.args.id")
+
+            "version": "2017-02-28",
+            "operation": "GetItem",
+            "key": {
+              "PK": $util.dynamodb.toDynamoDBJson($key),
+              "SK": $util.dynamodb.toDynamoDBJson($key),
+            },
+            "consistentRead" : true
+          }
+
+        ResponseMappingTemplate: |
+            $util.toJson($ctx.result)
+
+    GetItemsResolver:
+      Type: AWS::AppSync::Resolver
+      Properties:
+        ApiId: !GetAtt SimpleShopGraphQLApi.ApiId
+        FieldName: getItems
+        TypeName: Query 
+        DataSourceName: !GetAtt SimpleShopData.Name
+        Kind: UNIT
+        RequestMappingTemplate: |
+          {
+            "version" : "2017-02-28",
+            "operation" : "Scan",
+            "index" : "GSI2",
+            "limit": $util.defaultIfNull(${ctx.args.limit}, 20),
+            "nextToken": $util.toJson($util.defaultIfNullOrBlank($ctx.args.nextToken, null))
+          }
+
+        ResponseMappingTemplate: |
+          {
+            "items": $util.toJson($ctx.result.items),
+            "nextToken": $util.toJson($util.defaultIfNullOrBlank($context.result.nextToken, null))
+          } 
+     
